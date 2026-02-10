@@ -15,12 +15,21 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, create_engine, select
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    select,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from ..core.entities import Agent, Run, Thread
+from ..core.entities import Agent, Run, RunEvent, Thread
 
 JSON_TYPE = JSON().with_variant(JSONB(), "postgresql")
 
@@ -72,6 +81,20 @@ class RunRecord(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     mcp_servers_used: Mapped[list[str] | None] = mapped_column(JSON_TYPE, nullable=True)
     context: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False, default=dict)
+
+
+class RunEventRecord(Base):
+    """SQL row model for persisted RunEvent entities."""
+
+    __tablename__ = "run_events"
+    __table_args__ = (UniqueConstraint("run_id", "seq", name="uq_run_events_run_id_seq"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column("type", String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_TYPE, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 def _ensure_aware_utc(value: datetime | None) -> datetime | None:
@@ -321,3 +344,64 @@ class SQLAlchemyStore:
     def close(self) -> None:
         """Dispose the underlying engine and release pooled connections."""
         self.engine.dispose()
+
+    # -- Run events --
+
+    def save_run_event(self, event: RunEvent) -> None:
+        payload = {
+            "id": event.id,
+            "run_id": event.run_id,
+            "seq": event.seq,
+            "event_type": event.type,
+            "payload": event.payload.model_dump(mode="json"),
+            "created_at": event.created_at,
+        }
+        with self._write_session() as session:
+            record = session.get(RunEventRecord, event.id)
+            if record is None:
+                session.add(RunEventRecord(**payload))
+                return
+            for key, value in payload.items():
+                setattr(record, key, value)
+
+    def list_run_events(
+        self,
+        run_id: str,
+        *,
+        after_seq: int = 0,
+        limit: int = 1000,
+    ) -> list[RunEvent]:
+        if limit <= 0:
+            return []
+
+        with self._read_session() as session:
+            rows = session.scalars(
+                select(RunEventRecord)
+                .where(RunEventRecord.run_id == run_id)
+                .where(RunEventRecord.seq > after_seq)
+                .order_by(RunEventRecord.seq.asc())
+                .limit(limit)
+            ).all()
+            return [
+                RunEvent.from_dict(
+                    {
+                        "id": row.id,
+                        "run_id": row.run_id,
+                        "seq": row.seq,
+                        "type": row.event_type,
+                        "payload": row.payload,
+                        "created_at": _ensure_aware_utc(row.created_at),
+                    }
+                )
+                for row in rows
+            ]
+
+    def get_latest_run_event_seq(self, run_id: str) -> int:
+        with self._read_session() as session:
+            value = session.scalars(
+                select(RunEventRecord.seq)
+                .where(RunEventRecord.run_id == run_id)
+                .order_by(RunEventRecord.seq.desc())
+                .limit(1)
+            ).first()
+            return int(value or 0)

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..core.entities import Agent, Run, Thread
+from ..core.entities import Agent, Run, RunEvent, Thread
 
 
 class Store(Protocol):
@@ -33,3 +33,14 @@ class Store(Protocol):
     def save_run(self, run: Run) -> None: ...
     def get_run(self, run_id: str) -> Run | None: ...
     def list_runs(self, thread_id: str) -> list[Run]: ...
+
+    # -- Run event log --
+    def save_run_event(self, event: RunEvent) -> None: ...
+    def list_run_events(
+        self,
+        run_id: str,
+        *,
+        after_seq: int = 0,
+        limit: int = 1000,
+    ) -> list[RunEvent]: ...
+    def get_latest_run_event_seq(self, run_id: str) -> int: ...

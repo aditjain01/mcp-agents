@@ -10,6 +10,7 @@ A minimal, opinionated SDK for building agentic loops with MCP (Model Context Pr
 - **Versioned model config** - Agent model/provider/params are stored as one typed, versioned JSON blob
 - **Persistence-ready** - In-memory storage plus SQLAlchemy-backed persistence (`SQLAlchemyStore`)
 - **Server-ready** - Optional FastAPI API layer for multi-consumer/runtime-as-a-service usage
+- **Streaming-ready runs** - Persistent `RunEvent` log with replay + SSE streaming
 
 ## Installation
 
@@ -78,7 +79,11 @@ Then use endpoints like:
 
 - `POST /agents`
 - `POST /threads`
-- `POST /runs`
+- `POST /runs` (queue run for background worker)
+- `GET /runs/{run_id}/events` (replay)
+- `GET /runs/{run_id}/stream` (SSE)
+- `POST /runs/{run_id}/cancel`
+- `POST /runs/{run_id}/retry`
 - `GET /threads/{thread_id}/runs`
 
 Interactive API docs are available at `/docs`.
@@ -168,12 +173,23 @@ result2 = runtime.run(thread_id=thread.id, agent_id=agent.id,
 # The agent has full context from previous messages
 ```
 
+## Run Streaming and Reliability (v0.2)
+
+The API server now executes runs through an in-process `RunManager`:
+
+- `POST /runs` creates a queued run record and returns immediately
+- one background worker executes queued runs
+- each lifecycle step emits a persisted `RunEvent`
+- clients can replay history and then live-stream via SSE without losing order
+
+This gives a practical reliability baseline without external queue infrastructure.
+
 ## Future Features (Designed For, Not Yet Implemented)
 
 - **Per-run MCP server overrides** - Enable/disable specific servers per run
 - **Thread forking** - Copy a thread's messages to explore alternate paths
 - **More DB backends** - `SQLAlchemyStore` is included; swap in additional stores as needed
-- **Streaming** - Real-time token streaming
+- **Token-level streaming** - Current events are step/tool lifecycle level
 - **Multiple providers** - Anthropic, others (just swap `ChatOpenAI` for `ChatAnthropic`)
 
 ## Environment Variables

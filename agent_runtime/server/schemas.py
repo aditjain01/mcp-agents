@@ -11,9 +11,15 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ..core.config import MCPServerConfig
-from ..core.entities import Agent, Run, Thread
+from ..core.entities import Agent, Run, RunEvent, Thread
 from ..core.models import RunResult
-from ..core.types import JSONObject, JSONValue, ModelConfigV0, ModelProvider
+from ..core.types import (
+    JSONObject,
+    JSONValue,
+    ModelConfigV0,
+    ModelProvider,
+    RunEventPayloadV0,
+)
 
 
 class CreateAgentRequest(BaseModel):
@@ -98,6 +104,21 @@ class RunResponse(BaseModel):
     @classmethod
     def from_entity(cls, run: Run) -> "RunResponse":
         return cls.model_validate(run.to_dict())
+
+
+class RunEventResponse(BaseModel):
+    """Serialized RunEvent entity for API responses."""
+
+    id: str
+    run_id: str
+    seq: int
+    type: str
+    payload: RunEventPayloadV0
+    created_at: datetime
+
+    @classmethod
+    def from_entity(cls, event: RunEvent) -> "RunEventResponse":
+        return cls.model_validate(event.to_dict())
 
 
 class RunResultResponse(BaseModel):

@@ -10,11 +10,15 @@ from .core.types import (
     ModelConfig,
     ModelConfigV0,
     ModelProvider,
+    RunEventPayload,
+    RunEventPayloadV0,
+    RunEventType,
     RunStatus,
     RunStopReason,
     VersionedConfig,
     build_model_config_v0,
     parse_model_config,
+    parse_run_event_payload,
 )
 
 __all__ = [
@@ -25,9 +29,13 @@ __all__ = [
     "ModelProvider",
     "RunStatus",
     "RunStopReason",
+    "RunEventType",
     "VersionedConfig",
     "ModelConfigV0",
     "ModelConfig",
+    "RunEventPayloadV0",
+    "RunEventPayload",
     "parse_model_config",
+    "parse_run_event_payload",
     "build_model_config_v0",
 ]

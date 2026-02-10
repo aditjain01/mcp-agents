@@ -4,7 +4,7 @@ In-memory store implementation.
 
 from __future__ import annotations
 
-from ..core.entities import Agent, Run, Thread
+from ..core.entities import Agent, Run, RunEvent, Thread
 
 
 class InMemoryStore:
@@ -17,6 +17,7 @@ class InMemoryStore:
         self._agents: dict[str, Agent] = {}
         self._threads: dict[str, Thread] = {}
         self._runs: dict[str, Run] = {}
+        self._run_events: dict[str, list[RunEvent]] = {}
 
     # -- Agent --
 
@@ -56,3 +57,28 @@ class InMemoryStore:
 
     def list_runs(self, thread_id: str) -> list[Run]:
         return [r for r in self._runs.values() if r.thread_id == thread_id]
+
+    # -- Run events --
+
+    def save_run_event(self, event: RunEvent) -> None:
+        events = self._run_events.setdefault(event.run_id, [])
+        events.append(event)
+        events.sort(key=lambda item: item.seq)
+
+    def list_run_events(
+        self,
+        run_id: str,
+        *,
+        after_seq: int = 0,
+        limit: int = 1000,
+    ) -> list[RunEvent]:
+        events = self._run_events.get(run_id, [])
+        if limit <= 0:
+            return []
+        return [event for event in events if event.seq > after_seq][:limit]
+
+    def get_latest_run_event_seq(self, run_id: str) -> int:
+        events = self._run_events.get(run_id, [])
+        if not events:
+            return 0
+        return max(event.seq for event in events)

@@ -4,23 +4,26 @@ FastAPI application for serving the runtime via HTTP APIs.
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import asynccontextmanager
-from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import StreamingResponse
 
 from ..core.runtime import AgentRuntime
 from ..stores.base import Store
 from ..stores.memory import InMemoryStore
 from ..stores.sqlalchemy import SQLAlchemyStore
-from .dependencies import get_runtime
+from .dependencies import get_run_manager, get_runtime
+from .run_manager import RunManager
 from .schemas import (
     AgentResponse,
     CreateAgentRequest,
     CreateThreadRequest,
     ExecuteRunRequest,
+    RunEventResponse,
     RunResponse,
     RunResultResponse,
     ThreadResponse,
@@ -52,11 +55,16 @@ def create_app(*, store: Store | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app_instance: FastAPI):
         resolved_store = store or _create_store_from_env()
+        runtime = AgentRuntime(store=resolved_store)
+        run_manager = RunManager(runtime=runtime)
         app_instance.state.store = resolved_store
-        app_instance.state.runtime = AgentRuntime(store=resolved_store)
+        app_instance.state.runtime = runtime
+        app_instance.state.run_manager = run_manager
+        await run_manager.start()
         try:
             yield
         finally:
+            await run_manager.stop()
             close = getattr(resolved_store, "close", None)
             if callable(close):
                 close()
@@ -66,7 +74,7 @@ def create_app(*, store: Store | None = None) -> FastAPI:
         version="0.1.0",
         description=(
             "Opinionated HTTP API for AgentRuntime. "
-            "Create agents/threads, execute runs, and inspect execution records."
+            "Create agents/threads, submit runs, stream events, and inspect execution records."
         ),
         lifespan=lifespan,
     )
@@ -152,8 +160,27 @@ def create_app(*, store: Store | None = None) -> FastAPI:
 
     # ---- Run routes ----
 
-    @app_instance.post("/runs", response_model=RunResultResponse, status_code=status.HTTP_201_CREATED)
-    async def execute_run(
+    @app_instance.post("/runs", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
+    async def submit_run(
+        payload: ExecuteRunRequest,
+        run_manager: RunManager = Depends(get_run_manager),
+    ) -> RunResponse:
+        try:
+            run = await run_manager.submit_run(
+                thread_id=payload.thread_id,
+                agent_id=payload.agent_id,
+                user_message=payload.user_message,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if "not found" in message.lower():
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message) from exc
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message) from exc
+
+        return RunResponse.from_entity(run)
+
+    @app_instance.post("/runs/execute", response_model=RunResultResponse, status_code=status.HTTP_201_CREATED)
+    async def execute_run_sync(
         payload: ExecuteRunRequest,
         runtime: AgentRuntime = Depends(get_runtime),
     ) -> RunResultResponse:
@@ -194,6 +221,87 @@ def create_app(*, store: Store | None = None) -> FastAPI:
     ) -> list[RunResponse]:
         runs = runtime.store.list_runs(thread_id)
         return [RunResponse.from_entity(run) for run in runs]
+
+    @app_instance.get("/runs/{run_id}/events", response_model=list[RunEventResponse])
+    async def list_run_events(
+        run_id: str,
+        after_seq: int = 0,
+        limit: int = 1000,
+        run_manager: RunManager = Depends(get_run_manager),
+    ) -> list[RunEventResponse]:
+        run = run_manager.runtime.store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        events = run_manager.list_events(run_id, after_seq=after_seq, limit=limit)
+        return [RunEventResponse.from_entity(event) for event in events]
+
+    @app_instance.get("/runs/{run_id}/stream")
+    async def stream_run_events(
+        run_id: str,
+        request: Request,
+        after_seq: int = 0,
+        run_manager: RunManager = Depends(get_run_manager),
+    ) -> StreamingResponse:
+        run = run_manager.runtime.store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+        async def sse_event_generator():
+            try:
+                async for event in run_manager.stream_events(run_id, after_seq=after_seq):
+                    if await request.is_disconnected():
+                        break
+                    payload = {
+                        "id": event.id,
+                        "run_id": event.run_id,
+                        "seq": event.seq,
+                        "type": event.type,
+                        "payload": event.payload.model_dump(mode="json"),
+                        "created_at": event.created_at.isoformat(),
+                    }
+                    data = json.dumps(payload, default=str)
+                    yield f"id: {event.seq}\nevent: {event.type}\ndata: {data}\n\n"
+            except ValueError:
+                # If the run disappears mid-stream, end gracefully.
+                return
+
+        return StreamingResponse(
+            sse_event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app_instance.post("/runs/{run_id}/cancel", response_model=RunResponse)
+    async def cancel_run(
+        run_id: str,
+        run_manager: RunManager = Depends(get_run_manager),
+    ) -> RunResponse:
+        try:
+            run = await run_manager.cancel_run(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        return RunResponse.from_entity(run)
+
+    @app_instance.post("/runs/{run_id}/retry", response_model=RunResponse, status_code=status.HTTP_202_ACCEPTED)
+    async def retry_run(
+        run_id: str,
+        run_manager: RunManager = Depends(get_run_manager),
+    ) -> RunResponse:
+        try:
+            retried_run = await run_manager.retry_run(run_id)
+        except ValueError as exc:
+            message = str(exc)
+            status_code = (
+                status.HTTP_404_NOT_FOUND
+                if "not found" in message.lower()
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(status_code=status_code, detail=message) from exc
+        return RunResponse.from_entity(retried_run)
 
     return app_instance
 

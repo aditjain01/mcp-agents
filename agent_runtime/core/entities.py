@@ -17,7 +17,16 @@ from langchain_core.messages import BaseMessage, messages_from_dict, messages_to
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from .config import MCPServerConfig
-from .types import JSONObject, ModelConfig, ModelConfigV0, RunStatus, RunStopReason
+from .types import (
+    JSONObject,
+    ModelConfig,
+    ModelConfigV0,
+    RunEventPayload,
+    RunEventPayloadV0,
+    RunEventType,
+    RunStatus,
+    RunStopReason,
+)
 
 
 def _new_id() -> str:
@@ -198,3 +207,36 @@ class Run(BaseModel):
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Run:
         return cls.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
+# RunEvent -- append-only event log entry for a run
+# ---------------------------------------------------------------------------
+
+
+class RunEvent(BaseModel):
+    """
+    Persistent event emitted during run lifecycle execution.
+
+    This entity powers streaming, replay, and coarse-grained checkpointing.
+    """
+
+    id: str = Field(default_factory=_new_id)
+    run_id: str
+    seq: int
+    type: RunEventType
+    payload: RunEventPayload = Field(default_factory=RunEventPayloadV0)
+    created_at: datetime = Field(default_factory=_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RunEvent":
+        payload = dict(data)
+        if isinstance(payload.get("payload"), dict) and "version" not in payload["payload"]:
+            payload["payload"] = {
+                "version": "v0",
+                "data": payload["payload"],
+            }
+        return cls.model_validate(payload)

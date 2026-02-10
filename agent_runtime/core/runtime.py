@@ -7,9 +7,10 @@ Connects agents, threads, and MCP servers to execute agentic workflows.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
@@ -21,6 +22,13 @@ from .types import JSONValue, ModelConfig, ModelProvider, build_model_config_v0,
 from ..mcp.manager import MCPManager
 from ..mcp.tool_adapter import ToolAdapter
 from ..stores.base import Store
+
+
+RunEventEmitter = Callable[[str, dict[str, JSONValue]], Awaitable[None] | None]
+
+
+class RunCancelledError(Exception):
+    """Raised when a running loop should stop due to cancellation."""
 
 
 class AgentRuntime:
@@ -106,6 +114,32 @@ class AgentRuntime:
 
     # ---- Run execution ----
 
+    def create_run(
+        self,
+        thread_id: str,
+        agent_id: str,
+        *,
+        context: Mapping[str, JSONValue] | None = None,
+    ) -> Run:
+        """Create a queued Run record that can be executed later."""
+        thread = self.store.get_thread(thread_id)
+        if not thread:
+            raise ValueError(f"Thread {thread_id} not found")
+
+        agent = self.store.get_agent(agent_id)
+        if not agent:
+            raise ValueError(f"Agent {agent_id} not found")
+
+        run = Run(
+            thread_id=thread.id,
+            agent_id=agent.id,
+            status="queued",
+            mcp_servers_used=[s.name for s in agent.mcp_servers if s.enabled],
+            context=dict(context or {}),
+        )
+        self.store.save_run(run)
+        return run
+
     def run(
         self,
         thread_id: str,
@@ -123,36 +157,82 @@ class AgentRuntime:
         Returns:
             RunResult with the final output and execution metadata
         """
-        return asyncio.run(self._run_async(thread_id, agent_id, user_message))
+        run = self.create_run(
+            thread_id=thread_id,
+            agent_id=agent_id,
+            context={"user_message": user_message},
+        )
+        return asyncio.run(self.execute_run(run.id, user_message))
 
-    async def _run_async(
+    async def arun(
         self,
         thread_id: str,
         agent_id: str,
         user_message: str,
     ) -> RunResult:
-        """Async implementation of the agentic loop."""
-        # Load thread and agent
-        thread = self.store.get_thread(thread_id)
-        if not thread:
-            raise ValueError(f"Thread {thread_id} not found")
-
-        agent = self.store.get_agent(agent_id)
-        if not agent:
-            raise ValueError(f"Agent {agent_id} not found")
-
-        # Create a Run record
-        run = Run(
-            thread_id=thread.id,
-            agent_id=agent.id,
-            status="running",
-            mcp_servers_used=[s.name for s in agent.mcp_servers if s.enabled],
+        """Async API for creating and executing a run immediately."""
+        run = self.create_run(
+            thread_id=thread_id,
+            agent_id=agent_id,
+            context={"user_message": user_message},
         )
+        return await self.execute_run(run.id, user_message)
+
+    async def execute_run(
+        self,
+        run_id: str,
+        user_message: str,
+        *,
+        event_emitter: RunEventEmitter | None = None,
+        cancel_event: asyncio.Event | None = None,
+    ) -> RunResult:
+        """
+        Execute an already-created run record.
+
+        This method emits step-level events and checkpoints run/thread state after
+        each step, making execution resilient for streaming and replay.
+        """
+        run = self.store.get_run(run_id)
+        if not run:
+            raise ValueError(f"Run {run_id} not found")
+        if run.status == "cancelled":
+            return RunResult.from_run(run, "Run cancelled", [])
+
+        thread = self.store.get_thread(run.thread_id)
+        if not thread:
+            raise ValueError(f"Thread {run.thread_id} not found")
+
+        agent = self.store.get_agent(run.agent_id)
+        if not agent:
+            raise ValueError(f"Agent {run.agent_id} not found")
+
+        run.status = "running"
+        run.error = None
+        run.stop_reason = None
+        run.completed_at = None
+        run.started_at = self._now()
+        run.iterations = 0
         self.store.save_run(run)
+        await self._emit_event(
+            event_emitter,
+            "run.started",
+            {
+                "run_id": run.id,
+                "thread_id": run.thread_id,
+                "agent_id": run.agent_id,
+            },
+        )
+
+        mcp_manager: MCPManager | None = None
+        steps: list[StepResult] = []
 
         try:
+            await self._raise_if_cancelled(cancel_event)
+
             # Append user message to thread
             thread.messages.append(HumanMessage(content=user_message))
+            thread.updated_at = self._now()
+            self.store.save_thread(thread)
 
             # Connect to MCP servers and discover tools
             mcp_manager = MCPManager(agent.mcp_servers)
@@ -167,10 +247,19 @@ class AgentRuntime:
                 model = model.bind_tools(langchain_tools)
 
             # Execute the agentic loop
-            steps: list[StepResult] = []
             final_output = ""
 
-            for _ in range(agent.max_iterations):
+            for step_index in range(agent.max_iterations):
+                await self._raise_if_cancelled(cancel_event)
+                await self._emit_event(
+                    event_emitter,
+                    "step.started",
+                    {
+                        "run_id": run.id,
+                        "step_index": step_index,
+                    },
+                )
+
                 # Prepare messages with system prompt
                 messages = []
                 if agent.system_prompt:
@@ -180,6 +269,16 @@ class AgentRuntime:
                 # Call the model
                 response: AIMessage = await model.ainvoke(messages)
                 thread.messages.append(response)
+                await self._emit_event(
+                    event_emitter,
+                    "model.completed",
+                    {
+                        "run_id": run.id,
+                        "step_index": step_index,
+                        "content": self._as_json_value(response.content),
+                        "tool_calls_count": len(response.tool_calls),
+                    },
+                )
 
                 # Check if model wants to use tools
                 if not response.tool_calls:
@@ -193,14 +292,45 @@ class AgentRuntime:
                             stop=True,
                         )
                     )
+                    run.iterations = len(steps)
+                    thread.updated_at = self._now()
+                    self.store.save_thread(thread)
+                    self.store.save_run(run)
+                    await self._emit_event(
+                        event_emitter,
+                        "step.completed",
+                        {
+                            "run_id": run.id,
+                            "step_index": step_index,
+                            "stop": True,
+                            "tool_calls_count": 0,
+                        },
+                    )
                     break
 
                 # Execute tool calls
                 tool_records = []
-                for tool_call in response.tool_calls:
+                for tool_call_index, tool_call in enumerate(response.tool_calls):
+                    await self._raise_if_cancelled(cancel_event)
                     tool_name = tool_call["name"]
-                    tool_args = tool_call.get("args", {})
+                    raw_tool_args = tool_call.get("args", {})
+                    if not isinstance(raw_tool_args, dict):
+                        tool_args = {}
+                    else:
+                        tool_args = raw_tool_args
                     tool_call_id = tool_call.get("id", "")
+                    await self._emit_event(
+                        event_emitter,
+                        "tool.started",
+                        {
+                            "run_id": run.id,
+                            "step_index": step_index,
+                            "tool_call_index": tool_call_index,
+                            "tool_name": tool_name,
+                            "tool_call_id": tool_call_id,
+                            "args": self._as_json_value(tool_args),
+                        },
+                    )
 
                     try:
                         result = await mcp_manager.call_tool(tool_name, tool_args)
@@ -221,6 +351,19 @@ class AgentRuntime:
                                 is_error=False,
                             )
                         )
+                        await self._emit_event(
+                            event_emitter,
+                            "tool.completed",
+                            {
+                                "run_id": run.id,
+                                "step_index": step_index,
+                                "tool_call_index": tool_call_index,
+                                "tool_name": tool_name,
+                                "tool_call_id": tool_call_id,
+                                "is_error": False,
+                                "result": self._as_json_value(result),
+                            },
+                        )
                     except Exception as exc:
                         error_msg = f"Error calling tool {tool_name}: {str(exc)}"
                         thread.messages.append(
@@ -237,6 +380,19 @@ class AgentRuntime:
                                 is_error=True,
                             )
                         )
+                        await self._emit_event(
+                            event_emitter,
+                            "tool.completed",
+                            {
+                                "run_id": run.id,
+                                "step_index": step_index,
+                                "tool_call_index": tool_call_index,
+                                "tool_name": tool_name,
+                                "tool_call_id": tool_call_id,
+                                "is_error": True,
+                                "result": error_msg,
+                            },
+                        )
 
                 steps.append(
                     StepResult(
@@ -244,6 +400,20 @@ class AgentRuntime:
                         tool_calls=tool_records,
                         stop=False,
                     )
+                )
+                run.iterations = len(steps)
+                thread.updated_at = self._now()
+                self.store.save_thread(thread)
+                self.store.save_run(run)
+                await self._emit_event(
+                    event_emitter,
+                    "step.completed",
+                    {
+                        "run_id": run.id,
+                        "step_index": step_index,
+                        "stop": False,
+                        "tool_calls_count": len(tool_records),
+                    },
                 )
             else:
                 # Hit max iterations
@@ -253,25 +423,58 @@ class AgentRuntime:
             # Finalize the run
             run.status = "completed"
             run.iterations = len(steps)
-            run.completed_at = datetime.now(timezone.utc)
+            run.completed_at = self._now()
 
             # Save updated thread and run
             self.store.save_thread(thread)
             self.store.save_run(run)
-
-            # Cleanup MCP connections
-            await mcp_manager.disconnect_all()
+            await self._emit_event(
+                event_emitter,
+                "run.completed",
+                {
+                    "run_id": run.id,
+                    "iterations": run.iterations,
+                    "stop_reason": run.stop_reason,
+                    "output": final_output,
+                },
+            )
 
             return RunResult.from_run(run, final_output, steps)
 
+        except RunCancelledError:
+            run.status = "cancelled"
+            run.stop_reason = "cancelled"
+            run.completed_at = self._now()
+            self.store.save_thread(thread)
+            self.store.save_run(run)
+            await self._emit_event(
+                event_emitter,
+                "run.cancelled",
+                {
+                    "run_id": run.id,
+                    "iterations": run.iterations,
+                },
+            )
+            return RunResult.from_run(run, "Run cancelled", steps)
         except Exception as exc:
             # Handle errors
             run.status = "failed"
             run.error = str(exc)
             run.stop_reason = "error"
-            run.completed_at = datetime.now(timezone.utc)
+            run.completed_at = self._now()
             self.store.save_run(run)
+            await self._emit_event(
+                event_emitter,
+                "run.failed",
+                {
+                    "run_id": run.id,
+                    "error": str(exc),
+                },
+            )
             raise
+        finally:
+            if mcp_manager is not None:
+                await mcp_manager.disconnect_all()
 
     def _create_model(self, agent: Agent) -> ChatOpenAI:
         """Create a LangChain model instance from agent config."""
@@ -311,3 +514,31 @@ class AgentRuntime:
             api_key=api_key,
             **raw_kwargs,
         )
+
+    def _now(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    async def _emit_event(
+        self,
+        emitter: RunEventEmitter | None,
+        event_type: str,
+        payload: dict[str, JSONValue],
+    ) -> None:
+        if emitter is None:
+            return
+        maybe_awaitable = emitter(event_type, payload)
+        if inspect.isawaitable(maybe_awaitable):
+            await maybe_awaitable
+
+    async def _raise_if_cancelled(self, cancel_event: asyncio.Event | None) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RunCancelledError("Run was cancelled")
+
+    def _as_json_value(self, value: Any) -> JSONValue:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, list):
+            return [self._as_json_value(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): self._as_json_value(item) for key, item in value.items()}
+        return str(value)

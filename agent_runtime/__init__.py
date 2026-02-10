@@ -13,6 +13,7 @@ from .core import (
     MCPServerConfig,
     Agent,
     Run,
+    RunEvent,
     Thread,
     RunResult,
     StepResult,
@@ -20,6 +21,9 @@ from .core import (
     AgentRuntime,
     ModelConfig,
     ModelConfigV0,
+    RunEventPayload,
+    RunEventPayloadV0,
+    RunEventType,
 )
 from .server import app, create_app
 from .stores import InMemoryStore, SQLAlchemyStore, Store
@@ -34,6 +38,7 @@ __all__ = [
     "Agent",
     "Thread",
     "Run",
+    "RunEvent",
     # Configuration
     "MCPServerConfig",
     # Persistence
@@ -47,6 +52,9 @@ __all__ = [
     # Versioned typed config blobs
     "ModelConfig",
     "ModelConfigV0",
+    "RunEventType",
+    "RunEventPayloadV0",
+    "RunEventPayload",
 ]
 
 __version__ = "0.1.0"
