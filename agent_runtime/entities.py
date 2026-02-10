@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any
 
 from langchain_core.messages import BaseMessage, messages_to_dict, messages_from_dict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from .config import MCPServerConfig
+from .types import JSONObject, ModelConfig, ModelConfigV0, RunStatus, RunStopReason
 
 
 def _new_id() -> str:
@@ -40,25 +41,72 @@ class Agent(BaseModel):
 
     id: str = Field(default_factory=_new_id)
     name: str
-    model: str = Field(description="Model identifier, e.g. 'gpt-4o'")
-    provider: Literal["openai", "anthropic"] = "openai"
+    model: ModelConfig = Field(
+        default_factory=lambda: ModelConfigV0(model="gpt-4o"),
+        description=(
+            "Versioned model configuration blob. Includes provider/model/config "
+            "so it can be persisted as one typed JSON field."
+        ),
+    )
     system_prompt: str = ""
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     max_iterations: int = 10
-    temperature: float = 0.0
-    api_key: str | None = Field(
-        default=None,
-        description="Optional API key. Falls back to env var if not set.",
-    )
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
+
+    @property
+    def provider(self) -> str:
+        """Convenience accessor for provider within model config."""
+        return self.model.provider
+
+    @property
+    def model_name(self) -> str:
+        """Convenience accessor for model identifier within model config."""
+        return self.model.model
+
+    @property
+    def temperature(self) -> float:
+        """Convenience accessor for temperature from model config."""
+        value = self.model.config.get("temperature", 0.0)
+        if isinstance(value, (int, float)):
+            return float(value)
+        return 0.0
+
+    @property
+    def api_key(self) -> str | None:
+        """Convenience accessor for API key from model config."""
+        value = self.model.config.get("api_key")
+        if isinstance(value, str):
+            return value
+        return None
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Agent:
-        return cls.model_validate(data)
+        # Backward compatibility for older payloads where model/provider/temperature
+        # were top-level Agent fields.
+        payload = dict(data)
+        if isinstance(payload.get("model"), str):
+            model_name = payload.pop("model")
+            provider = payload.pop("provider", "openai")
+            temperature = payload.pop("temperature", 0.0)
+            api_key = payload.pop("api_key", None)
+
+            model_payload: dict[str, Any] = {
+                "version": "v0",
+                "provider": provider,
+                "model": model_name,
+                "config": {
+                    "temperature": temperature,
+                },
+            }
+            if api_key is not None:
+                model_payload["config"]["api_key"] = api_key
+            payload["model"] = model_payload
+
+        return cls.model_validate(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +125,7 @@ class Thread(BaseModel):
     """
 
     id: str = Field(default_factory=_new_id)
-    metadata: dict[str, Any] = Field(
+    metadata: JSONObject = Field(
         default_factory=dict,
         description="Open-ended context (e.g. user info, session tags)",
     )
@@ -87,9 +135,9 @@ class Thread(BaseModel):
     # Messages are stored outside the pydantic model for flexibility
     # (BaseMessage isn't a plain pydantic model).  We keep a private list
     # and expose helpers.
-    _messages: list[BaseMessage] = []
+    _messages: list[BaseMessage] = PrivateAttr(default_factory=list)
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def __init__(self, **data: Any) -> None:
         messages = data.pop("messages", [])
@@ -129,17 +177,17 @@ class Run(BaseModel):
     id: str = Field(default_factory=_new_id)
     thread_id: str
     agent_id: str
-    status: Literal["queued", "running", "completed", "failed", "cancelled"] = "queued"
+    status: RunStatus = "queued"
     started_at: datetime = Field(default_factory=_now)
     completed_at: datetime | None = None
     iterations: int = 0
-    stop_reason: Literal["end_turn", "max_iterations", "error"] | None = None
+    stop_reason: RunStopReason | None = None
     error: str | None = None
     mcp_servers_used: list[str] | None = Field(
         default=None,
         description="Which MCP servers were active. v0: all from Agent.",
     )
-    context: dict[str, Any] = Field(
+    context: JSONObject = Field(
         default_factory=dict,
         description="Run-specific params or overrides (extensible for future).",
     )

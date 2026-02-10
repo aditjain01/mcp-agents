@@ -11,10 +11,10 @@
 │     Agent       │         │     Thread      │
 │  (config)       │         │   (messages)    │
 │                 │         │                 │
-│ - model         │         │ - messages[]    │
+│ - model{}       │         │ - messages[]    │
 │ - system_prompt │         │ - metadata      │
 │ - mcp_servers   │         │                 │
-│ - temperature   │         │                 │
+│ - max_iterations│         │                 │
 └─────────────────┘         └─────────────────┘
         │                           │
         │                           │
@@ -143,6 +143,9 @@ Every entity has:
 - `created_at: datetime`
 - `updated_at: datetime` (Agent, Thread)
 - `to_dict()` / `from_dict()` methods
+
+JSON-blob fields (for example, `Agent.model`) are represented in code with
+explicit typed/versioned schemas (`ModelConfigV0`) before being persisted.
 
 This makes DB migration straightforward:
 ```python

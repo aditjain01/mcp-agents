@@ -4,16 +4,21 @@ Configuration models for MCP server connections.
 
 from __future__ import annotations
 
+from typing import Self
+
 from pydantic import BaseModel, Field
+from pydantic import model_validator
+
+from .types import MCPTransport
 
 
 class MCPServerConfig(BaseModel):
     """Configuration for a single MCP server connection."""
 
     name: str = Field(description="Human-readable server identifier")
-    transport: str = Field(
+    transport: MCPTransport = Field(
         description="Transport type: 'stdio' or 'sse'"
-    )  # Literal["stdio", "sse"] kept as str for flexibility
+    )
 
     # stdio transport fields
     command: str | None = Field(
@@ -38,3 +43,12 @@ class MCPServerConfig(BaseModel):
         default=True,
         description="Whether this server is enabled. v0: always True, exists for future per-run overrides.",
     )
+
+    @model_validator(mode="after")
+    def validate_transport_fields(self) -> Self:
+        """Validate required fields for the selected transport."""
+        if self.transport == "stdio" and not self.command:
+            raise ValueError("stdio transport requires 'command'")
+        if self.transport == "sse" and not self.url:
+            raise ValueError("sse transport requires 'url'")
+        return self

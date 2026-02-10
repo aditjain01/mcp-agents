@@ -13,7 +13,9 @@ from .config import MCPServerConfig
 from .entities import Agent, Run, Thread
 from .models import RunResult, StepResult, ToolCallRecord
 from .runtime import AgentRuntime
+from .sqlalchemy_store import SQLAlchemyStore
 from .store import InMemoryStore, Store
+from .types import ModelConfig, ModelConfigV0
 
 __all__ = [
     # Main runtime
@@ -27,10 +29,14 @@ __all__ = [
     # Persistence
     "Store",
     "InMemoryStore",
+    "SQLAlchemyStore",
     # Results
     "RunResult",
     "StepResult",
     "ToolCallRecord",
+    # Versioned typed config blobs
+    "ModelConfig",
+    "ModelConfigV0",
 ]
 
 __version__ = "0.1.0"

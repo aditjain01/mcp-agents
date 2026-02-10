@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
@@ -19,6 +19,7 @@ from .entities import Agent, Run, Thread
 from .mcp_manager import MCPManager
 from .models import RunResult, StepResult, ToolCallRecord
 from .store import Store
+from .types import JSONValue, ModelConfig, ModelProvider, build_model_config_v0, parse_model_config
 
 
 class AgentRuntime:
@@ -41,21 +42,39 @@ class AgentRuntime:
         model: str = "gpt-4o",
         system_prompt: str = "",
         mcp_servers: list[MCPServerConfig] | None = None,
-        provider: str = "openai",
+        provider: ModelProvider = "openai",
         max_iterations: int = 10,
         temperature: float = 0.0,
         api_key: str | None = None,
+        model_params: Mapping[str, JSONValue] | None = None,
+        model_config: ModelConfig | Mapping[str, Any] | None = None,
     ) -> Agent:
-        """Create and persist an Agent."""
+        """
+        Create and persist an Agent.
+
+        For v0, callers may either:
+        - pass `model_config` directly (preferred, explicit)
+        - use convenience params (`model`, `provider`, `temperature`, `api_key`)
+          which are composed into a v0 ModelConfig blob.
+        """
+        resolved_model_config = (
+            parse_model_config(model_config)
+            if model_config is not None
+            else build_model_config_v0(
+                model=model,
+                provider=provider,
+                temperature=temperature,
+                api_key=api_key,
+                extra_config=model_params,
+            )
+        )
+
         agent = Agent(
             name=name,
-            model=model,
-            provider=provider,
+            model=resolved_model_config,
             system_prompt=system_prompt,
             mcp_servers=mcp_servers or [],
             max_iterations=max_iterations,
-            temperature=temperature,
-            api_key=api_key,
         )
         self.store.save_agent(agent)
         return agent
@@ -249,15 +268,39 @@ class AgentRuntime:
 
     def _create_model(self, agent: Agent) -> ChatOpenAI:
         """Create a LangChain model instance from agent config."""
-        if agent.provider != "openai":
-            raise NotImplementedError(f"Provider {agent.provider} not yet implemented. Only 'openai' is supported in v0.")
+        model_config = agent.model
+        if model_config.version != "v0":
+            raise NotImplementedError(
+                f"Unsupported model config version '{model_config.version}'"
+            )
 
-        api_key = agent.api_key or os.getenv("OPENAI_API_KEY")
+        if model_config.provider != "openai":
+            raise NotImplementedError(
+                f"Provider {model_config.provider} not yet implemented. "
+                "Only 'openai' is supported in v0."
+            )
+
+        raw_kwargs = dict(model_config.config)
+
+        raw_temperature = raw_kwargs.pop("temperature", 0.0)
+        if not isinstance(raw_temperature, (int, float)):
+            raise ValueError("Model config 'temperature' must be numeric")
+        temperature = float(raw_temperature)
+
+        raw_api_key = raw_kwargs.pop("api_key", None)
+        if raw_api_key is not None and not isinstance(raw_api_key, str):
+            raise ValueError("Model config 'api_key' must be a string when provided")
+
+        api_key = raw_api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY env var or pass api_key to agent.")
+            raise ValueError(
+                "OpenAI API key not found. Set OPENAI_API_KEY env var "
+                "or include api_key in agent.model.config."
+            )
 
         return ChatOpenAI(
-            model=agent.model,
-            temperature=agent.temperature,
+            model=model_config.model,
+            temperature=temperature,
             api_key=api_key,
+            **raw_kwargs,
         )

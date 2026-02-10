@@ -7,7 +7,8 @@ A minimal, opinionated SDK for building agentic loops with MCP (Model Context Pr
 - **Agent / Thread / Run architecture** - Clean separation of configuration, conversation, and execution
 - **MCP integration** - Connect to MCP servers (stdio, SSE) for tool discovery and execution
 - **Model-agnostic** - Uses LangChain core for provider flexibility (OpenAI in v0, more coming)
-- **Persistence-ready** - In-memory storage with swappable store protocol for future DB integration
+- **Versioned model config** - Agent model/provider/params are stored as one typed, versioned JSON blob
+- **Persistence-ready** - In-memory storage plus SQLAlchemy-backed persistence (`SQLAlchemyStore`)
 
 ## Installation
 
@@ -63,10 +64,10 @@ See `examples/basic_agent.py` for a complete working example.
 ### Agent
 
 Persistent configuration that defines an agent's behavior:
-- Model and provider settings
+- Versioned model/provider settings (`ModelConfigV0`)
 - System prompt
 - MCP servers available to the agent
-- Execution parameters (max iterations, temperature)
+- Execution parameters (max iterations; model params live under `model.config`)
 
 Create once, reuse across many threads and runs.
 
@@ -147,7 +148,7 @@ result2 = runtime.run(thread_id=thread.id, agent_id=agent.id,
 
 - **Per-run MCP server overrides** - Enable/disable specific servers per run
 - **Thread forking** - Copy a thread's messages to explore alternate paths
-- **DB persistence** - Swap `InMemoryStore` for `PrismaStore` or `PostgresStore`
+- **More DB backends** - `SQLAlchemyStore` is included; swap in additional stores as needed
 - **Streaming** - Real-time token streaming
 - **Multiple providers** - Anthropic, others (just swap `ChatOpenAI` for `ChatAnthropic`)
 
@@ -162,7 +163,9 @@ agent_runtime/
   __init__.py          # Public API exports
   config.py            # MCPServerConfig
   entities.py          # Agent, Thread, Run
+  types.py             # Shared typed definitions + versioned ModelConfig
   store.py             # Store protocol + InMemoryStore
+  sqlalchemy_store.py  # SQLAlchemy-backed Store implementation
   mcp_manager.py       # MCP connection lifecycle
   tool_adapter.py      # MCP → LangChain tool conversion
   runtime.py           # AgentRuntime (main orchestrator)
