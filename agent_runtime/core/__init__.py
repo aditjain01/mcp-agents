@@ -1,8 +1,14 @@
 """
-Backward-compatible re-export for core type definitions.
+Core SDK modules.
+
+Contains runtime-domain types, entities, and orchestration logic.
 """
 
-from .core.types import (
+from .config import MCPServerConfig
+from .entities import Agent, Run, Thread
+from .models import RunResult, StepResult, ToolCallRecord
+from .runtime import AgentRuntime
+from .types import (
     JSONPrimitive,
     JSONObject,
     JSONValue,
@@ -18,6 +24,14 @@ from .core.types import (
 )
 
 __all__ = [
+    "AgentRuntime",
+    "MCPServerConfig",
+    "Agent",
+    "Thread",
+    "Run",
+    "RunResult",
+    "StepResult",
+    "ToolCallRecord",
     "JSONPrimitive",
     "JSONValue",
     "JSONObject",

@@ -76,6 +76,21 @@
 - `InMemoryStore` for v0
 - Future: `PrismaStore`, `PostgresStore`
 
+### `Runtime API Server` (FastAPI)
+- Wraps `AgentRuntime` behind HTTP routes for multi-consumer usage
+- Initializes store/runtime on startup (in-memory or SQLAlchemy via env vars)
+- Exposes CRUD-ish routes for Agent/Thread/Run and execute route for runs
+
+## SDK Module Layout
+
+```
+agent_runtime/
+  core/       # domain entities, configs, runtime orchestration
+  stores/     # persistence protocol + implementations
+  mcp/        # MCP connection and tool adaptation
+  server/     # FastAPI app + schemas + startup wiring
+```
+
 ## The Agentic Loop
 
 ```python

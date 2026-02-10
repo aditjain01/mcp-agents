@@ -9,6 +9,7 @@ A minimal, opinionated SDK for building agentic loops with MCP (Model Context Pr
 - **Model-agnostic** - Uses LangChain core for provider flexibility (OpenAI in v0, more coming)
 - **Versioned model config** - Agent model/provider/params are stored as one typed, versioned JSON blob
 - **Persistence-ready** - In-memory storage plus SQLAlchemy-backed persistence (`SQLAlchemyStore`)
+- **Server-ready** - Optional FastAPI API layer for multi-consumer/runtime-as-a-service usage
 
 ## Installation
 
@@ -58,6 +59,29 @@ print(result.output)
 ```
 
 See `examples/basic_agent.py` for a complete working example.
+
+## Run as an API Server (FastAPI)
+
+You can run the runtime as an HTTP service:
+
+```bash
+agent-runtime-server
+```
+
+Or:
+
+```bash
+python -m agent_runtime.server
+```
+
+Then use endpoints like:
+
+- `POST /agents`
+- `POST /threads`
+- `POST /runs`
+- `GET /threads/{thread_id}/runs`
+
+Interactive API docs are available at `/docs`.
 
 ## Core Concepts
 
@@ -155,21 +179,32 @@ result2 = runtime.run(thread_id=thread.id, agent_id=agent.id,
 ## Environment Variables
 
 - `OPENAI_API_KEY` - Required for OpenAI models (or pass `api_key` to agent)
+- `AGENT_RUNTIME_STORE` - `in_memory` (default) or `sqlalchemy`
+- `AGENT_RUNTIME_DATABASE_URL` - SQLAlchemy URL when using DB store
+- `AGENT_RUNTIME_HOST` - API host (default `0.0.0.0`)
+- `AGENT_RUNTIME_PORT` - API port (default `8000`)
+- `AGENT_RUNTIME_RELOAD` - `true|false` for uvicorn reload
 
 ## Project Structure
 
 ```
 agent_runtime/
   __init__.py          # Public API exports
-  config.py            # MCPServerConfig
-  entities.py          # Agent, Thread, Run
-  types.py             # Shared typed definitions + versioned ModelConfig
-  store.py             # Store protocol + InMemoryStore
-  sqlalchemy_store.py  # SQLAlchemy-backed Store implementation
-  mcp_manager.py       # MCP connection lifecycle
-  tool_adapter.py      # MCP → LangChain tool conversion
-  runtime.py           # AgentRuntime (main orchestrator)
-  models.py            # StepResult, RunResult
+  core/                # Runtime domain (types, config, entities, runtime)
+  stores/              # Store protocol + store implementations
+  mcp/                 # MCP integration modules
+  server/              # FastAPI app, schemas, and server launcher
+
+  # Backward-compatible module shims (legacy imports)
+  config.py
+  entities.py
+  runtime.py
+  store.py
+  sqlalchemy_store.py
+  mcp_manager.py
+  tool_adapter.py
+  models.py
+  types.py
 
 examples/
   basic_agent.py       # Usage example
