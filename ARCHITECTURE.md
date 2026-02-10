@@ -86,6 +86,7 @@
 - Executes runs in a background worker
 - Persists append-only `RunEvent` records with ordered `seq` per run
 - Supports cooperative cancellation and replayable event streaming
+- Works with thread forking to enable "rerun from checkpoint" workflows
 
 ## SDK Module Layout
 

@@ -47,6 +47,24 @@ class CreateThreadRequest(BaseModel):
     metadata: JSONObject = Field(default_factory=dict)
 
 
+class ForkThreadRequest(BaseModel):
+    """Payload for forking a thread."""
+
+    up_to_message_index: int | None = None
+    metadata: JSONObject = Field(default_factory=dict)
+    include_source_metadata: bool = True
+
+
+class RerunThreadRequest(BaseModel):
+    """Payload for rerunning from a thread checkpoint."""
+
+    agent_id: str
+    user_message: str
+    up_to_message_index: int | None = None
+    metadata: JSONObject = Field(default_factory=dict)
+    include_source_metadata: bool = True
+
+
 class ExecuteRunRequest(BaseModel):
     """Payload for executing one runtime run."""
 
@@ -141,3 +159,10 @@ class RunResultResponse(BaseModel):
             stop_reason=result.stop_reason,
             steps=[asdict(step) for step in result.steps],
         )
+
+
+class ThreadRerunResponse(BaseModel):
+    """Response payload containing forked thread and submitted run."""
+
+    thread: ThreadResponse
+    run: RunResponse

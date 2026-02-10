@@ -79,7 +79,10 @@ Then use endpoints like:
 
 - `POST /agents`
 - `POST /threads`
+- `POST /threads/{thread_id}/fork`
+- `POST /threads/{thread_id}/rerun`
 - `POST /runs` (queue run for background worker)
+- `POST /runs/execute` (sync execute compatibility)
 - `GET /runs/{run_id}/events` (replay)
 - `GET /runs/{run_id}/stream` (SSE)
 - `POST /runs/{run_id}/cancel`

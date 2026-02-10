@@ -7,6 +7,7 @@ Connects agents, threads, and MCP servers to execute agentic workflows.
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import os
 from datetime import datetime, timezone
@@ -111,6 +112,54 @@ class AgentRuntime:
     def list_threads(self) -> list[Thread]:
         """List all Threads."""
         return self.store.list_threads()
+
+    def fork_thread(
+        self,
+        source_thread_id: str,
+        *,
+        up_to_message_index: int | None = None,
+        metadata_override: Mapping[str, JSONValue] | None = None,
+        include_source_metadata: bool = True,
+    ) -> Thread:
+        """
+        Fork a thread (optionally from a specific message index).
+
+        This is the primitive needed for "rerun part of a thread" workflows:
+        fork from a checkpoint, then execute new runs on the fork.
+        """
+        source = self.store.get_thread(source_thread_id)
+        if source is None:
+            raise ValueError(f"Thread {source_thread_id} not found")
+
+        source_messages = list(source.messages)
+        if up_to_message_index is None:
+            selected_messages = source_messages
+        else:
+            if up_to_message_index < 0:
+                raise ValueError("up_to_message_index must be >= 0")
+            if up_to_message_index >= len(source_messages):
+                raise ValueError(
+                    "up_to_message_index is out of range for source thread messages"
+                )
+            selected_messages = source_messages[: up_to_message_index + 1]
+
+        metadata: dict[str, JSONValue] = (
+            dict(source.metadata) if include_source_metadata else {}
+        )
+        if metadata_override:
+            metadata.update(dict(metadata_override))
+
+        metadata.setdefault("forked_from_thread_id", source.id)
+        metadata["forked_from_message_count"] = len(selected_messages)
+        if up_to_message_index is not None:
+            metadata["forked_from_message_index"] = up_to_message_index
+
+        forked_thread = Thread(
+            metadata=metadata,
+            messages=[copy.deepcopy(message) for message in selected_messages],
+        )
+        self.store.save_thread(forked_thread)
+        return forked_thread
 
     # ---- Run execution ----
 

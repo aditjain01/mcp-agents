@@ -23,10 +23,13 @@ from .schemas import (
     CreateAgentRequest,
     CreateThreadRequest,
     ExecuteRunRequest,
+    ForkThreadRequest,
+    RerunThreadRequest,
     RunEventResponse,
     RunResponse,
     RunResultResponse,
     ThreadResponse,
+    ThreadRerunResponse,
 )
 
 
@@ -157,6 +160,74 @@ def create_app(*, store: Store | None = None) -> FastAPI:
     ) -> Response:
         runtime.store.delete_thread(thread_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app_instance.post(
+        "/threads/{thread_id}/fork",
+        response_model=ThreadResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def fork_thread(
+        thread_id: str,
+        payload: ForkThreadRequest,
+        runtime: AgentRuntime = Depends(get_runtime),
+    ) -> ThreadResponse:
+        try:
+            forked_thread = runtime.fork_thread(
+                source_thread_id=thread_id,
+                up_to_message_index=payload.up_to_message_index,
+                metadata_override=payload.metadata,
+                include_source_metadata=payload.include_source_metadata,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            status_code = (
+                status.HTTP_404_NOT_FOUND
+                if "not found" in message.lower()
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(status_code=status_code, detail=message) from exc
+        return ThreadResponse.from_entity(forked_thread)
+
+    @app_instance.post(
+        "/threads/{thread_id}/rerun",
+        response_model=ThreadRerunResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def rerun_from_thread(
+        thread_id: str,
+        payload: RerunThreadRequest,
+        runtime: AgentRuntime = Depends(get_runtime),
+        run_manager: RunManager = Depends(get_run_manager),
+    ) -> ThreadRerunResponse:
+        try:
+            forked_thread = runtime.fork_thread(
+                source_thread_id=thread_id,
+                up_to_message_index=payload.up_to_message_index,
+                metadata_override=payload.metadata,
+                include_source_metadata=payload.include_source_metadata,
+            )
+            run = await run_manager.submit_run(
+                thread_id=forked_thread.id,
+                agent_id=payload.agent_id,
+                user_message=payload.user_message,
+                context={
+                    "rerun_from_thread_id": thread_id,
+                    "rerun_source_message_index": payload.up_to_message_index,
+                },
+            )
+        except ValueError as exc:
+            message = str(exc)
+            status_code = (
+                status.HTTP_404_NOT_FOUND
+                if "not found" in message.lower()
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(status_code=status_code, detail=message) from exc
+
+        return ThreadRerunResponse(
+            thread=ThreadResponse.from_entity(forked_thread),
+            run=RunResponse.from_entity(run),
+        )
 
     # ---- Run routes ----
 
