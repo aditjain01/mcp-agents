@@ -5,13 +5,23 @@ description = "Agent SDK/Runtime for agentic loops with MCP tool integration"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "fastapi>=0.128.7",
     "langchain-core>=0.3.0",
     "langchain-openai>=0.2.0",
     "mcp>=1.0.0",
     "pydantic>=2.0.0",
+    "sqlalchemy>=2.0.46",
+    "uvicorn>=0.40.0",
 ]
+
+[project.scripts]
+agent-runtime-server = "agent_runtime.server.main:run"
 
 [dependency-groups]
 dev = [
     "ipykernel>=7.2.0",
+    "pytest>=9.0.2",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

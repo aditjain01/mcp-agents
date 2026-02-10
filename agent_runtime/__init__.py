@@ -9,28 +9,52 @@ Public API exports:
 - RunResult, StepResult: Result objects
 """
 
-from .config import MCPServerConfig
-from .entities import Agent, Run, Thread
-from .models import RunResult, StepResult, ToolCallRecord
-from .runtime import AgentRuntime
-from .store import InMemoryStore, Store
+from .core import (
+    MCPServerConfig,
+    Agent,
+    Run,
+    RunEvent,
+    Thread,
+    RunResult,
+    StepResult,
+    ToolCallRecord,
+    AgentRuntime,
+    ModelConfig,
+    ModelConfigV0,
+    RunEventPayload,
+    RunEventPayloadV0,
+    RunEventType,
+)
+from .server import app, create_app
+from .stores import InMemoryStore, SQLAlchemyStore, Store
 
 __all__ = [
     # Main runtime
     "AgentRuntime",
+    # FastAPI server
+    "app",
+    "create_app",
     # Core entities
     "Agent",
     "Thread",
     "Run",
+    "RunEvent",
     # Configuration
     "MCPServerConfig",
     # Persistence
     "Store",
     "InMemoryStore",
+    "SQLAlchemyStore",
     # Results
     "RunResult",
     "StepResult",
     "ToolCallRecord",
+    # Versioned typed config blobs
+    "ModelConfig",
+    "ModelConfigV0",
+    "RunEventType",
+    "RunEventPayloadV0",
+    "RunEventPayload",
 ]
 
 __version__ = "0.1.0"

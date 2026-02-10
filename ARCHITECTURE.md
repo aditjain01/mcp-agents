@@ -11,10 +11,10 @@
 │     Agent       │         │     Thread      │
 │  (config)       │         │   (messages)    │
 │                 │         │                 │
-│ - model         │         │ - messages[]    │
+│ - model{}       │         │ - messages[]    │
 │ - system_prompt │         │ - metadata      │
 │ - mcp_servers   │         │                 │
-│ - temperature   │         │                 │
+│ - max_iterations│         │                 │
 └─────────────────┘         └─────────────────┘
         │                           │
         │                           │
@@ -76,6 +76,28 @@
 - `InMemoryStore` for v0
 - Future: `PrismaStore`, `PostgresStore`
 
+### `Runtime API Server` (FastAPI)
+- Wraps `AgentRuntime` behind HTTP routes for multi-consumer usage
+- Initializes store/runtime on startup (in-memory or SQLAlchemy via env vars)
+- Exposes CRUD-ish routes for Agent/Thread/Run plus run event replay/stream routes
+
+### `RunManager` (in-process queue + worker)
+- Accepts run submissions and persists queued `Run` records
+- Executes runs in a background worker
+- Persists append-only `RunEvent` records with ordered `seq` per run
+- Supports cooperative cancellation and replayable event streaming
+- Works with thread forking to enable "rerun from checkpoint" workflows
+
+## SDK Module Layout
+
+```
+agent_runtime/
+  core/       # domain entities, configs, runtime orchestration
+  stores/     # persistence protocol + implementations
+  mcp/        # MCP connection and tool adaptation
+  server/     # FastAPI app + schemas + startup wiring
+```
+
 ## The Agentic Loop
 
 ```python
@@ -83,7 +105,13 @@
 def run(thread_id, agent_id, user_message):
     thread = store.get_thread(thread_id)
     agent = store.get_agent(agent_id)
-    run = Run(thread_id=thread.id, agent_id=agent.id, status="running")
+    run = Run(thread_id=thread.id, agent_id=agent.id, status="queued")
+    enqueue(run)
+
+async def worker():
+    run = dequeue()
+    run.status = "running"
+    emit("run.started")
     
     thread.messages.append(HumanMessage(content=user_message))
     
@@ -107,8 +135,12 @@ def run(thread_id, agent_id, user_message):
             result = await mcp_manager.call_tool(tool_call["name"], tool_call["args"])
             thread.messages.append(ToolMessage(content=result, tool_call_id=tool_call["id"]))
     
+    checkpoint_after_each_step()
+    emit("step.completed")
+
     store.save_thread(thread)
-    store.save_run(run)
+    store.save_run(run)      # terminal state
+    emit("run.completed")
     await mcp_manager.disconnect_all()
 ```
 
@@ -143,6 +175,9 @@ Every entity has:
 - `created_at: datetime`
 - `updated_at: datetime` (Agent, Thread)
 - `to_dict()` / `from_dict()` methods
+
+JSON-blob fields (for example, `Agent.model`) are represented in code with
+explicit typed/versioned schemas (`ModelConfigV0`) before being persisted.
 
 This makes DB migration straightforward:
 ```python

@@ -7,7 +7,10 @@ A minimal, opinionated SDK for building agentic loops with MCP (Model Context Pr
 - **Agent / Thread / Run architecture** - Clean separation of configuration, conversation, and execution
 - **MCP integration** - Connect to MCP servers (stdio, SSE) for tool discovery and execution
 - **Model-agnostic** - Uses LangChain core for provider flexibility (OpenAI in v0, more coming)
-- **Persistence-ready** - In-memory storage with swappable store protocol for future DB integration
+- **Versioned model config** - Agent model/provider/params are stored as one typed, versioned JSON blob
+- **Persistence-ready** - In-memory storage plus SQLAlchemy-backed persistence (`SQLAlchemyStore`)
+- **Server-ready** - Optional FastAPI API layer for multi-consumer/runtime-as-a-service usage
+- **Streaming-ready runs** - Persistent `RunEvent` log with replay + SSE streaming
 
 ## Installation
 
@@ -58,15 +61,45 @@ print(result.output)
 
 See `examples/basic_agent.py` for a complete working example.
 
+## Run as an API Server (FastAPI)
+
+You can run the runtime as an HTTP service:
+
+```bash
+agent-runtime-server
+```
+
+Or:
+
+```bash
+python -m agent_runtime.server
+```
+
+Then use endpoints like:
+
+- `POST /agents`
+- `POST /threads`
+- `POST /threads/{thread_id}/fork`
+- `POST /threads/{thread_id}/rerun`
+- `POST /runs` (queue run for background worker)
+- `POST /runs/execute` (sync execute compatibility)
+- `GET /runs/{run_id}/events` (replay)
+- `GET /runs/{run_id}/stream` (SSE)
+- `POST /runs/{run_id}/cancel`
+- `POST /runs/{run_id}/retry`
+- `GET /threads/{thread_id}/runs`
+
+Interactive API docs are available at `/docs`.
+
 ## Core Concepts
 
 ### Agent
 
 Persistent configuration that defines an agent's behavior:
-- Model and provider settings
+- Versioned model/provider settings (`ModelConfigV0`)
 - System prompt
 - MCP servers available to the agent
-- Execution parameters (max iterations, temperature)
+- Execution parameters (max iterations; model params live under `model.config`)
 
 Create once, reuse across many threads and runs.
 
@@ -143,30 +176,54 @@ result2 = runtime.run(thread_id=thread.id, agent_id=agent.id,
 # The agent has full context from previous messages
 ```
 
+## Run Streaming and Reliability (v0.2)
+
+The API server now executes runs through an in-process `RunManager`:
+
+- `POST /runs` creates a queued run record and returns immediately
+- one background worker executes queued runs
+- each lifecycle step emits a persisted `RunEvent`
+- clients can replay history and then live-stream via SSE without losing order
+
+This gives a practical reliability baseline without external queue infrastructure.
+
 ## Future Features (Designed For, Not Yet Implemented)
 
 - **Per-run MCP server overrides** - Enable/disable specific servers per run
 - **Thread forking** - Copy a thread's messages to explore alternate paths
-- **DB persistence** - Swap `InMemoryStore` for `PrismaStore` or `PostgresStore`
-- **Streaming** - Real-time token streaming
+- **More DB backends** - `SQLAlchemyStore` is included; swap in additional stores as needed
+- **Token-level streaming** - Current events are step/tool lifecycle level
 - **Multiple providers** - Anthropic, others (just swap `ChatOpenAI` for `ChatAnthropic`)
 
 ## Environment Variables
 
 - `OPENAI_API_KEY` - Required for OpenAI models (or pass `api_key` to agent)
+- `AGENT_RUNTIME_STORE` - `in_memory` (default) or `sqlalchemy`
+- `AGENT_RUNTIME_DATABASE_URL` - SQLAlchemy URL when using DB store
+- `AGENT_RUNTIME_HOST` - API host (default `0.0.0.0`)
+- `AGENT_RUNTIME_PORT` - API port (default `8000`)
+- `AGENT_RUNTIME_RELOAD` - `true|false` for uvicorn reload
 
 ## Project Structure
 
 ```
 agent_runtime/
   __init__.py          # Public API exports
-  config.py            # MCPServerConfig
-  entities.py          # Agent, Thread, Run
-  store.py             # Store protocol + InMemoryStore
-  mcp_manager.py       # MCP connection lifecycle
-  tool_adapter.py      # MCP → LangChain tool conversion
-  runtime.py           # AgentRuntime (main orchestrator)
-  models.py            # StepResult, RunResult
+  core/                # Runtime domain (types, config, entities, runtime)
+  stores/              # Store protocol + store implementations
+  mcp/                 # MCP integration modules
+  server/              # FastAPI app, schemas, and server launcher
+
+  # Backward-compatible module shims (legacy imports)
+  config.py
+  entities.py
+  runtime.py
+  store.py
+  sqlalchemy_store.py
+  mcp_manager.py
+  tool_adapter.py
+  models.py
+  types.py
 
 examples/
   basic_agent.py       # Usage example
