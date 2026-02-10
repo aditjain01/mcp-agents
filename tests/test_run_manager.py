@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
 from agent_runtime.server.run_manager import RunManager
 
 
-def _wait_for_status(runtime, run_id: str, expected: set[str], timeout: float = 2.0) -> str:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+async def _wait_for_status(
+    runtime,
+    run_id: str,
+    expected: set[str],
+    timeout: float = 2.0,
+) -> str:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
         run = runtime.store.get_run(run_id)
         if run is not None and run.status in expected:
             return run.status
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
     run = runtime.store.get_run(run_id)
     return run.status if run else "missing"
 
@@ -32,7 +36,7 @@ def test_run_manager_submit_run_completes_and_records_events(runtime_with_memory
             agent_id=agent.id,
             user_message="ping",
         )
-        status = _wait_for_status(runtime, run.id, {"completed", "failed", "cancelled"})
+        status = await _wait_for_status(runtime, run.id, {"completed", "failed", "cancelled"})
         assert status == "completed"
         events = manager.list_events(run.id)
         types = [event.type for event in events]
