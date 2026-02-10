@@ -1,0 +1,17 @@
+[project]
+name = "mcp-sharepoint"
+version = "0.1.0"
+description = "Agent SDK/Runtime for agentic loops with MCP tool integration"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "mcp>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+]
